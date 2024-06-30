@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runze-syringe-pump"
+version = "0.2.0"
+
+description = "A Python package that provides control of Runze Fluid Syringe Pumps"
+readme = "readme.md"
+requires-python = ">=3.10"
+
+dependencies = [
+  "pyserial>=3.5"
+]
+
+[project.urls]
+repository = "https://github.com/TablewareBox/runze-syringe-pump"
+
+[tool.setuptools.packages.find]
+include = ["runze_syringe_pump"]

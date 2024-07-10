@@ -15,6 +15,51 @@ class RunzeSyringePumpMode(Enum):
     AccuratePosVel = 2
 
 
+pulse_freq_grades = {
+    6000: "0" ,
+    5600: "1" ,
+    5000: "2" ,
+    4400: "3" ,
+    3800: "4" ,
+    3200: "5" ,
+    2600: "6" ,
+    2200: "7" ,
+    2000: "8" ,
+    1800: "9" ,
+    1600: "10",
+    1400: "11",
+    1200: "12",
+    1000: "13",
+    800 : "14",
+    600 : "15",
+    400 : "16",
+    200 : "17",
+    190 : "18",
+    180 : "19",
+    170 : "20",
+    160 : "21",
+    150 : "22",
+    140 : "23",
+    130 : "24",
+    120 : "25",
+    110 : "26",
+    100 : "27",
+    90  : "28",
+    80  : "29",
+    70  : "30",
+    60  : "31",
+    50  : "32",
+    40  : "33",
+    30  : "34",
+    20  : "35",
+    18  : "36",
+    16  : "37",
+    14  : "38",
+    12  : "39",
+    10  : "40",
+}
+
+
 class RunzeSyringePumpConnectionError(Exception):
     pass
 
@@ -39,7 +84,8 @@ class RunzeSyringePump:
         self.volume = volume
         self.mode = mode
         self.total_steps = 6000 if self.mode == RunzeSyringePumpMode.Normal else 48000
-
+        self.total_steps_vel = 48000 if self.mode == RunzeSyringePumpMode.AccuratePosVel else 6000
+        
         try:
             self._serial = Serial(
                 baudrate=9600,
@@ -143,7 +189,9 @@ class RunzeSyringePump:
                 self._run_future = None
 
     async def initialize(self):
-        return await self._run("Z")
+        response = await self._run("Z")
+        self.initialized = True
+        return response
     
     # Settings
 
@@ -158,12 +206,17 @@ class RunzeSyringePump:
     async def set_step_mode(self, mode: RunzeSyringePumpMode):
         self.mode = mode
         self.total_steps = 6000 if self.mode == RunzeSyringePumpMode.Normal else 48000
+        self.total_steps_vel = 48000 if self.mode == RunzeSyringePumpMode.AccuratePosVel else 6000
         command = f"N{mode.value}"
-        print(command)
         return await self._run(command)
 
-    async def set_speed(self, speed: int):
+    async def set_speed_grade(self, speed: Union[int, str]):
         return await self._run(f"S{speed}")
+    
+    async def set_speed_max(self, speed: float):
+        pulse_freq = int(speed / self.volume * self.total_steps_vel)
+        pulse_freq = min(6000, pulse_freq)
+        return await self._run(f"V{speed}")
     
     # Operations
 
@@ -222,15 +275,33 @@ class RunzeSyringePump:
         response = await self._query("?0")
         status, pos_step = response[0], int(response[1:])
         return pos_step / self.total_steps * self.volume
+    
+    async def query_speed_grade(self):
+        pulse_freq, speed = await self.query_speed_max()
+        g = "-1"
+        for freq, grade in pulse_freq_grades.items():
+            if pulse_freq >= freq:
+                g = grade
+                break
+        return g
 
-    async def query_start_speed(self):
-        return await self._query("?1")
+    async def query_speed_init(self):
+        response = await self._query("?1")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
 
-    async def query_max_speed(self):
-        return await self._query("?2")
+    async def query_speed_max(self):
+        response = await self._query("?2")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
 
-    async def query_cutoff_speed(self):
-        return await self._query("?3")
+    async def query_speed_end(self):
+        response = await self._query("?3")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
 
     async def query_plunger_position(self):
         response = await self._query("?4")
@@ -238,7 +309,9 @@ class RunzeSyringePump:
         return pos_step / self.total_steps * self.volume
 
     async def query_valve_position(self):
-        return await self._query("?6")
+        response = await self._query("?6")
+        status, pos_valve = response[0], response[1].upper()
+        return pos_valve
 
     async def query_command_buffer_status(self):
         return await self._query("?10")

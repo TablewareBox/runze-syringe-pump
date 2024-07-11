@@ -77,14 +77,12 @@ class RunzeSyringePumpInfo:
 
 
 class RunzeSyringePump:
-    def __init__(self, port: str, address: str = "1", volume: float = 25000, mode: RunzeSyringePumpMode = RunzeSyringePumpMode.Normal):
+    def __init__(self, port: str, address: str = "1", volume: float = 25000, mode: RunzeSyringePumpMode = None):
         self.port = port
         self.address = address
         
         self.volume = volume
-        self.mode = mode
-        self.total_steps = 6000 if self.mode == RunzeSyringePumpMode.Normal else 48000
-        self.total_steps_vel = 48000 if self.mode == RunzeSyringePumpMode.AccuratePosVel else 6000
+        self.total_steps = self.total_steps_vel = 6000
         
         try:
             self._serial = Serial(
@@ -102,6 +100,17 @@ class RunzeSyringePump:
         self._read_task: Optional[Task[None]] = None
         self._run_future: Optional[Future[Any]] = None
         self._run_lock = Lock()
+        
+        if mode:
+            self.mode = mode
+            self.set_step_mode(self.mode)
+        else:
+            loop = asyncio.get_event_loop()
+            self.mode = loop.run_until_complete(self.query_step_mode())
+    
+    def _adjust_total_steps(self):
+        self.total_steps = 6000 if self.mode == RunzeSyringePumpMode.Normal else 48000
+        self.total_steps_vel = 48000 if self.mode == RunzeSyringePumpMode.AccuratePosVel else 6000
 
     async def _read_loop(self):
         try:
@@ -203,13 +212,23 @@ class RunzeSyringePump:
         else:
             raise ValueError("Unsupported baudrate")
     
+    # Mode Settings and Queries
+    
     async def set_step_mode(self, mode: RunzeSyringePumpMode):
         self.mode = mode
-        self.total_steps = 6000 if self.mode == RunzeSyringePumpMode.Normal else 48000
-        self.total_steps_vel = 48000 if self.mode == RunzeSyringePumpMode.AccuratePosVel else 6000
+        self._adjust_total_steps()
         command = f"N{mode.value}"
         return await self._run(command)
+    
+    async def query_step_mode(self):
+        response = await self._query("?28")
+        status, mode = response[0], int(response[1])
+        self.mode = RunzeSyringePumpMode._value2member_map_[mode]
+        self._adjust_total_steps()
+        return self.mode
 
+    # Speed Settings and Queries
+    
     async def set_speed_grade(self, speed: Union[int, str]):
         return await self._run(f"S{speed}")
     
@@ -218,7 +237,47 @@ class RunzeSyringePump:
         pulse_freq = min(6000, pulse_freq)
         return await self._run(f"V{speed}")
     
+    async def query_speed_grade(self):
+        pulse_freq, speed = await self.query_speed_max()
+        g = "-1"
+        for freq, grade in pulse_freq_grades.items():
+            if pulse_freq >= freq:
+                g = grade
+                break
+        return g
+
+    async def query_speed_init(self):
+        response = await self._query("?1")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
+
+    async def query_speed_max(self):
+        response = await self._query("?2")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
+
+    async def query_speed_end(self):
+        response = await self._query("?3")
+        status, pulse_freq = response[0], int(response[1:])
+        speed = pulse_freq / self.total_steps_vel * self.volume
+        return pulse_freq, speed
+    
     # Operations
+    
+    # Valve Setpoint and Queries
+
+    async def set_valve_position(self, position: Union[int, str]):
+        command = f"I{position}" if type(position) == int or ord(position) <= 57 else position.upper() 
+        return await self._run(command)
+
+    async def query_valve_position(self):
+        response = await self._query("?6")
+        status, pos_valve = response[0], response[1].upper()
+        return pos_valve
+    
+    # Plunger Setpoint and Queries
 
     async def move_plunger_to(self, volume: float):
         """
@@ -259,9 +318,15 @@ class RunzeSyringePump:
         pos_step = int(volume / self.volume * self.total_steps)
         return await self._run(f"D{pos_step}")
 
-    async def set_valve_position(self, position: Union[int, str]):
-        command = f"I{position}" if type(position) == int or ord(position) <= 57 else position.upper() 
-        return await self._run(command)
+    async def report_position(self):
+        response = await self._query("?0")
+        status, pos_step = response[0], int(response[1:])
+        return pos_step / self.total_steps * self.volume
+
+    async def query_plunger_position(self):
+        response = await self._query("?4")
+        status, pos_step = response[0], int(response[1:])
+        return pos_step / self.total_steps * self.volume
 
     async def stop_operation(self):
         return await self._run("T")
@@ -270,48 +335,6 @@ class RunzeSyringePump:
 
     async def query_device_status(self):
         return await self._query("Q")
-
-    async def report_position(self):
-        response = await self._query("?0")
-        status, pos_step = response[0], int(response[1:])
-        return pos_step / self.total_steps * self.volume
-    
-    async def query_speed_grade(self):
-        pulse_freq, speed = await self.query_speed_max()
-        g = "-1"
-        for freq, grade in pulse_freq_grades.items():
-            if pulse_freq >= freq:
-                g = grade
-                break
-        return g
-
-    async def query_speed_init(self):
-        response = await self._query("?1")
-        status, pulse_freq = response[0], int(response[1:])
-        speed = pulse_freq / self.total_steps_vel * self.volume
-        return pulse_freq, speed
-
-    async def query_speed_max(self):
-        response = await self._query("?2")
-        status, pulse_freq = response[0], int(response[1:])
-        speed = pulse_freq / self.total_steps_vel * self.volume
-        return pulse_freq, speed
-
-    async def query_speed_end(self):
-        response = await self._query("?3")
-        status, pulse_freq = response[0], int(response[1:])
-        speed = pulse_freq / self.total_steps_vel * self.volume
-        return pulse_freq, speed
-
-    async def query_plunger_position(self):
-        response = await self._query("?4")
-        status, pos_step = response[0], int(response[1:])
-        return pos_step / self.total_steps * self.volume
-
-    async def query_valve_position(self):
-        response = await self._query("?6")
-        status, pos_valve = response[0], response[1].upper()
-        return pos_valve
 
     async def query_command_buffer_status(self):
         return await self._query("?10")
